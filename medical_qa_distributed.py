@@ -60,19 +60,20 @@ class MultiGPUConfig:
             )
             torch.cuda.set_device(rank)
 
-def initialize_qa_model(gpu_config, rank=0):
+def initialize_qa_model(gpu_config, rank=0, model_name=None):
     """Initialize QA model with multi-GPU support"""
-    print("\nAvailable Medical QA Models:")
-    for model_name, info in MEDICAL_QA_MODELS.items():
-        print(f"\n{model_name}:")
-        print(f"Parameters: {info['parameters']}")
-        print(f"Description: {info['description']}")
-        print(f"Strengths: {info['strengths']}")
+    if rank == 0:  # Only print model info on main process
+        print("\nAvailable Medical QA Models:")
+        for name, info in MEDICAL_QA_MODELS.items():
+            print(f"\n{name}:")
+            print(f"Parameters: {info['parameters']}")
+            print(f"Description: {info['description']}")
+            print(f"Strengths: {info['strengths']}")
 
-    selected_model = input("\nEnter the name of the model you want to use (default: GanjinZero/biomedical-flan-t5-large): ").strip()
-    if not selected_model or selected_model not in MEDICAL_QA_MODELS:
-        print("Using default model: GanjinZero/biomedical-flan-t5-large")
-        selected_model = "GanjinZero/biomedical-flan-t5-large"
+    # Use provided model name or default
+    selected_model = model_name or "GanjinZero/biomedical-flan-t5-large"
+    if rank == 0:
+        print(f"\nUsing model: {selected_model}")
 
     tokenizer = AutoTokenizer.from_pretrained(selected_model)
     model = AutoModelForSeq2SeqLM.from_pretrained(selected_model)
@@ -82,19 +83,23 @@ def initialize_qa_model(gpu_config, rank=0):
         device = torch.device(f'cuda:{rank}')
         model = model.to(device)
         model = DDP(model, device_ids=[rank])
-        print(f"Using GPU {rank} in distributed mode")
+        if rank == 0:
+            print(f"Using GPU {rank} in distributed mode")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
         model = model.to(device)
-        print("Using single GPU")
+        if rank == 0:
+            print("Using single GPU")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
         model = model.to(device)
-        print("Using MPS backend for Apple Silicon")
+        if rank == 0:
+            print("Using MPS backend for Apple Silicon")
     else:
         device = torch.device("cpu")
         model = model.to(device)
-        print("Using CPU")
+        if rank == 0:
+            print("Using CPU")
     
     return model, tokenizer, device
 
@@ -261,7 +266,7 @@ def parallel_rag_infer(questions, kb, index, encoder, qa_model, tokenizer, devic
     
     return results
 
-def compare_rag_performance_parallel():
+def compare_rag_performance_parallel(model_name=None):
     """Compare and evaluate RAG vs. no-RAG performance using multiple GPUs"""
     
     # Initialize multi-GPU setup
@@ -273,21 +278,21 @@ def compare_rag_performance_parallel():
         # Launch processes for each GPU
         torch.multiprocessing.spawn(
             run_distributed_comparison,
-            args=(gpu_config,),
+            args=(gpu_config, model_name),
             nprocs=gpu_config.n_gpus
         )
     else:
         # Single GPU or CPU mode
-        run_distributed_comparison(0, gpu_config)
+        run_distributed_comparison(0, gpu_config, model_name)
 
-def run_distributed_comparison(rank, gpu_config):
+def run_distributed_comparison(rank, gpu_config, model_name=None):
     """Run comparison on a single GPU in distributed setting"""
     
     if gpu_config.using_multi_gpu:
         gpu_config.setup_distributed(rank)
     
-    # Initialize components
-    qa_model, tokenizer, device = initialize_qa_model(gpu_config, rank)
+    # Initialize components with specified model
+    qa_model, tokenizer, device = initialize_qa_model(gpu_config, rank, model_name)
     metrics = ParallelQualityMetrics(gpu_config, rank)
     
     # Load knowledge base and retrieval components
