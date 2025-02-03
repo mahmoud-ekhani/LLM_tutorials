@@ -12,6 +12,7 @@ from bert_score import score
 import spacy
 from sentence_transformers import SentenceTransformer
 import faiss
+import torch.nn as nn
 
 # Download required NLTK data
 nltk.download('punkt')
@@ -186,6 +187,39 @@ class ParallelQualityMetrics:
         medical_ents = [ent for ent in doc.ents if ent.label_ in ['DISEASE', 'CHEMICAL', 'PROCEDURE']]
         return len(medical_ents)
 
+def retrieve_contexts(query, index, encoder, knowledge_base, k=3):
+    """Retrieve relevant contexts for a query"""
+    try:
+        # Handle both DataParallel and regular encoder cases
+        if isinstance(encoder, nn.DataParallel):
+            actual_encoder = encoder.module
+        else:
+            actual_encoder = encoder
+            
+        # Move query to same device as encoder
+        device = next(actual_encoder.parameters()).device
+        
+        # Encode query
+        with torch.no_grad():
+            query_vector = actual_encoder.encode([query], convert_to_numpy=True, device=device)
+        
+        # Search index
+        distances, indices = index.search(query_vector, k)
+        
+        # Return relevant contexts with metadata and distances
+        retrieved = []
+        for idx, distance in zip(indices[0], distances[0]):
+            if 0 <= idx < len(knowledge_base):  # Validate index
+                context = knowledge_base[idx].copy()
+                context['distance'] = float(distance)
+                retrieved.append(context)
+        
+        return retrieved
+        
+    except Exception as e:
+        print(f"Error retrieving contexts: {e}")
+        return []
+
 def parallel_rag_infer(questions, kb, index, encoder, qa_model, tokenizer, device, metrics, 
                       gpu_config, rank=0, use_context=True, top_k=3, batch_size=8):
     """Parallel RAG-enhanced medical QA inference"""
@@ -201,6 +235,7 @@ def parallel_rag_infer(questions, kb, index, encoder, qa_model, tokenizer, devic
             batch_contexts = []
             for question in batch_questions:
                 contexts = retrieve_contexts(question, index, encoder, kb, k=top_k)
+                # Extract just the text from contexts
                 combined_context = "\n".join([ctx['text'] for ctx in contexts])
                 batch_contexts.append(combined_context)
             
